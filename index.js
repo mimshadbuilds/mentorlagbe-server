@@ -26,6 +26,12 @@ const tuitionsCollection = db.collection('tuitions')
 const applicationsCollection = db.collection('applications')
 const paymentsCollection = db.collection('payments')
 
+app.get('/tuitions', async(req, res) => {
+    const result = await tuitionsCollection.find().toArray()
+    res.send(result)
+})
+
+
 
 app.get('/', (req, res) => {
     res.send('Welcome to mentorlagbe server');
