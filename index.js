@@ -54,6 +54,38 @@ const verifyToken = async (req, res, next) => {
         })
     }
 }
+const verifyTutor = async (req, res, next) => {
+    try {
+        const user = await usersCollection.findOne({
+            email: req.user.email
+        })
+
+        if (!user) {
+            return res.status(404).send({
+                success: false,
+                message: 'User not found'
+            })
+        }
+
+        if (user.role !== 'tutor') {
+            return res.status(403).send({
+                success: false,
+                message: 'Forbidden! Tutor access required.'
+            })
+        }
+
+        req.tutor = user
+
+        next()
+    } catch (error) {
+        console.error('Tutor verification failed:', error.message)
+
+        return res.status(500).send({
+            success: false,
+            message: 'Internal server error'
+        })
+    }
+}
 
 const client = new MongoClient(process.env.MONGODB_URI)
 
@@ -66,7 +98,7 @@ export async function connectToMongoDB() {
 const mongoClient = await connectToMongoDB()
 const db = mongoClient.db('mentorlagbeDB')
 
-const usersCollection = db.collection('users')
+const usersCollection = db.collection('user')
 const tuitionsCollection = db.collection('tuitions')
 const applicationsCollection = db.collection('applications')
 const paymentsCollection = db.collection('payments')
