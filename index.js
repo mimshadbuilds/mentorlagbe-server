@@ -583,6 +583,49 @@ app.get("/admin/users", verifyToken, verifyAdmin, async (req, res) => {
     }
 });
 
+app.patch("/admin/users/:id/role", verifyToken, verifyAdmin, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { role } = req.body;
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).send({
+                message: "Invalid user ID."
+            });
+        }
+
+        if (!["student", "tutor", "admin"].includes(role)) {
+            return res.status(400).send({
+                message: "Invalid user role."
+            });
+        }
+
+        const result = await usersCollection.updateOne(
+            { _id: new ObjectId(id) },
+            {
+                $set: { role }
+            }
+        );
+
+        if (result.matchedCount === 0) {
+            return res.status(404).send({
+                message: "User not found."
+            });
+        }
+
+        res.status(200).send({
+            message: "User role updated successfully.",
+            role
+        });
+    } catch (error) {
+        console.error("Failed to update user role:", error);
+
+        res.status(500).send({
+            message: "Failed to update user role."
+        });
+    }
+}); 
+
 app.get('/', (req, res) => {
     res.send('Welcome to mentorlagbe backend server');
 })
