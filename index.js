@@ -368,8 +368,69 @@ app.delete("/tuitions/:id", verifyToken, verifyTutor, async (req, res) => {
     }
 });
 
+app.patch("/tuitions/:id/status", verifyToken, verifyTutor, async (req, res) => {
+    const { id } = req.params;
+    const { isActive } = req.body;
+
+    try {
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).send({ message: "Invalid tuition ID." });
+    }
+
+        if (typeof isActive !== "boolean") {
+        return res.status(400).send({
+            message: "isActive must be a boolean.",
+        });
+        }
+
+    const result = await tuitionsCollection.updateOne(
+        {
+            _id: new ObjectId(id),
+            tutorEmail: req.tutor.email,
+        },
+        {
+            $set: { isActive },
+        }
+    );
+
+        if (result.matchedCount === 0) {
+        return res.status(404).send({
+            message: "Tuition not found or you are not authorized to update it.",
+        });
+        }
+
+    res.status(200).send({
+        message: `Tuition ${isActive ? "activated" : "deactivated"} successfully.`,
+    });
+    } catch(error) {
+    console.error("Failed to update tuition status:", error);
+
+    res.status(500).send({
+        message: "Failed to update tuition status.",
+        });
+    }
+});
+
+//admin api
+app.get("/admin/tuitions", verifyToken, verifyAdmin, async (req, res) => {
+    try {
+        const result = await tuitionsCollection.find({ approvalStatus: "pending" })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+        res.status(200).send(result);
+    } catch(error) {
+        console.error("Failed to fetch pending tuitions:", error);
+
+        res.status(500).send({
+        message: "Failed to fetch pending tuition listings.",
+        });
+    }
+});
+
+
 app.get('/', (req, res) => {
-    res.send('Welcome to mentorlagbe server');
+    res.send('Welcome to mentorlagbe backend server');
 })
 
 app.listen(port, () => {
