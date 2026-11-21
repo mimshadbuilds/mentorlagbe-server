@@ -462,13 +462,20 @@ app.get("/admin/tuitions", verifyToken, verifyAdmin, async (req, res) => {
     }
 });
 
-app.patch("/admin/tuitions/:id/approve", verifyToken, verifyAdmin, async (req, res) => {
+app.patch("/admin/tuitions/:id/approval", verifyToken, verifyAdmin, async (req, res) => {
     const { id } = req.params;
+    const { approvalStatus } = req.body;
 
     try {
         if (!ObjectId.isValid(id)) {
             return res.status(400).send({
                 message: "Invalid tuition ID."
+            });
+        }
+
+        if (!["approved", "rejected"].includes(approvalStatus)) {
+            return res.status(400).send({
+                message: "approvalStatus must be approved or rejected."
             });
         }
 
@@ -478,7 +485,7 @@ app.patch("/admin/tuitions/:id/approve", verifyToken, verifyAdmin, async (req, r
                 approvalStatus: "pending"
             },
             {
-                $set: { approvalStatus: "approved" }
+                $set: { approvalStatus }
             }
         );
 
@@ -489,13 +496,13 @@ app.patch("/admin/tuitions/:id/approve", verifyToken, verifyAdmin, async (req, r
         }
 
         res.status(200).send({
-            message: "Tuition approved successfully."
+            message: `Tuition ${approvalStatus} successfully.`
         });
     } catch (error) {
-        console.error("Failed to approve tuition:", error);
+        console.error("Failed to update tuition approval:", error);
 
         res.status(500).send({
-            message: "Failed to approve tuition."
+            message: "Failed to update tuition approval."
         });
     }
 });
