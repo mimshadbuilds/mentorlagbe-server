@@ -201,7 +201,6 @@ app.post('/tuitions', verifyToken, verifyTutor, async (req, res) => {
     }
 })
 
-
 app.get("/tuitions", async (req, res) => {
     try {
         const { q, subject, classLevel, mode } = req.query;
@@ -248,6 +247,58 @@ app.get("/tuitions", async (req, res) => {
         });
     }
 });
+
+
+app.get("/tuitions/my", verifyToken, verifyTutor, async (req, res) => {
+    try {
+        const result = await tuitionsCollection
+            .find({ tutorEmail: req.tutor.email })
+            .sort({ createdAt: -1 })
+            .toArray();
+
+        res.status(200).send(result);
+    } catch (error) {
+        console.error("Failed to fetch tutor tuitions:", error);
+
+        res.status(500).send({
+            message: "Failed to fetch your tuition listings.",
+        });
+    }
+});
+
+
+app.get("/tuitions/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).send({
+                message: "Invalid tuition ID.",
+            });
+        }
+
+        const result = await tuitionsCollection.findOne({
+            _id: new ObjectId(id),
+            approvalStatus: "approved",
+            isActive: true,
+        });
+
+        if (!result) {
+            return res.status(404).send({
+                message: "Tuition listing not found.",
+            });
+        }
+
+        res.status(200).send(result);
+    } catch (error) {
+        console.error("Failed to fetch tuition:", error);
+
+        res.status(500).send({
+            message: "Failed to fetch tuition details.",
+        });
+    }
+});
+
 
 
 app.get('/', (req, res) => {
