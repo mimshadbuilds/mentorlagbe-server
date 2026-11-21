@@ -555,6 +555,34 @@ app.get("/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
     }
 });
 
+app.get("/admin/users", verifyToken, verifyAdmin, async (req, res) => {
+    try {
+        const result = await usersCollection
+            .find({},
+                {
+                    projection: {
+                        name: 1,
+                        email: 1,
+                        role: 1,
+                        plan: 1,
+                        image: 1,
+                        createdAt: 1
+                    }
+                }
+            )
+            .sort({ createdAt: -1 })
+            .toArray();
+
+        res.status(200).send(result);
+    } catch (error) {
+        console.error("Failed to fetch admin users:", error);
+
+        res.status(500).send({
+            message: "Failed to fetch users."
+        });
+    }
+});
+
 app.get('/', (req, res) => {
     res.send('Welcome to mentorlagbe backend server');
 })
