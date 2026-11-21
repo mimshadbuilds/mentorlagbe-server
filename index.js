@@ -248,7 +248,6 @@ app.get("/tuitions", async (req, res) => {
     }
 });
 
-
 app.get("/tuitions/my", verifyToken, verifyTutor, async (req, res) => {
     try {
         const result = await tuitionsCollection
@@ -296,6 +295,47 @@ app.get("/tuitions/:id", async (req, res) => {
         res.status(500).send({
             message: "Failed to fetch tuition details.",
         });
+    }
+});
+
+app.patch("/tuitions/:id", verifyToken, verifyTutor, async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: "Invalid tuition ID." });
+        }
+
+    const { title, subject, classLevel, mode, location, monthlyFee, daysPerWeek, bannerImage, description } = req.body;
+
+    const updatedTuition = { title, subject, classLevel, mode, location, monthlyFee, daysPerWeek, bannerImage, description };
+
+    const result = await tuitionsCollection.updateOne(
+        { 
+            _id: new ObjectId(id),
+            tutorEmail: req.tutor.email,
+            },
+        {
+            $set: updatedTuition,
+        }
+        );
+
+        if (result.matchedCount === 0) {
+        return res.status(404).send({
+            message: "Tuition not found or you are not authorized to update it.",
+        });
+        }
+
+        res.status(200).send({
+        message: "Tuition updated successfully.",
+        modifiedCount: result.modifiedCount,
+        });
+    } catch (error) {
+    console.error("Failed to update tuition:", error);
+
+    res.status(500).send({
+    message: "Failed to update tuition.",
+    });
     }
 });
 
