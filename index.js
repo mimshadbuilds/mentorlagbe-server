@@ -87,6 +87,40 @@ const verifyTutor = async (req, res, next) => {
     }
 }
 
+const verifyAdmin = async (req, res, next) => {
+    try {
+        const user = await usersCollection.findOne({
+            email: req.user.email
+        });
+
+        if (!user) {
+            return res.status(404).send({
+                success: false,
+                message: "User not found."
+            });
+        }
+
+        if (user.role !== "admin") {
+            return res.status(403).send({
+                success: false,
+                message: "Forbidden! Admin access required."
+            });
+        }
+
+        req.admin = user;
+
+        next();
+    } catch (error) {
+        console.error("Admin verification failed:", error.message);
+
+        return res.status(500).send({
+            success: false,
+            message: "Internal server error."
+        });
+    }
+};
+
+
 const client = new MongoClient(process.env.MONGODB_URI)
 
 export async function connectToMongoDB() {
@@ -428,6 +462,43 @@ app.get("/admin/tuitions", verifyToken, verifyAdmin, async (req, res) => {
     }
 });
 
+app.patch("/admin/tuitions/:id/approve", verifyToken, verifyAdmin, async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).send({
+                message: "Invalid tuition ID."
+            });
+        }
+
+        const result = await tuitionsCollection.updateOne(
+            {
+                _id: new ObjectId(id),
+                approvalStatus: "pending"
+            },
+            {
+                $set: { approvalStatus: "approved" }
+            }
+        );
+
+        if (result.matchedCount === 0) {
+            return res.status(404).send({
+                message: "Pending tuition not found."
+            });
+        }
+
+        res.status(200).send({
+            message: "Tuition approved successfully."
+        });
+    } catch (error) {
+        console.error("Failed to approve tuition:", error);
+
+        res.status(500).send({
+            message: "Failed to approve tuition."
+        });
+    }
+});
 
 app.get('/', (req, res) => {
     res.send('Welcome to mentorlagbe backend server');
