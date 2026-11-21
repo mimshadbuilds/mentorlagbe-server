@@ -265,7 +265,6 @@ app.get("/tuitions/my", verifyToken, verifyTutor, async (req, res) => {
     }
 });
 
-
 app.get("/tuitions/:id", async (req, res) => {
     try {
         const { id } = req.params;
@@ -339,7 +338,35 @@ app.patch("/tuitions/:id", verifyToken, verifyTutor, async (req, res) => {
     }
 });
 
+app.delete("/tuitions/:id", verifyToken, verifyTutor, async (req, res) => {
+    const { id } = req.params;
 
+    try {
+        if(!ObjectId.isValid(id)) {
+    return res.status(400).send({ message: "Invalid tuition ID." });
+    }
+
+    const result = await tuitionsCollection.deleteOne({
+        _id: new ObjectId(id), 
+        tutorEmail: req.tutor.email,
+    });
+
+    if (result.deletedCount === 0) {
+        return res.status(404).send({
+        message: "Tuition not found or you are not authorized to delete it.",
+    });
+    }
+
+    res.status(200).send({
+        message: "Tuition deleted successfully." });
+    } catch(error) {
+    console.error("Failed to delete tuition:", error);
+
+    res.status(500).send({
+        message: "Failed to delete tuition.",
+    });
+    }
+});
 
 app.get('/', (req, res) => {
     res.send('Welcome to mentorlagbe server');
