@@ -103,11 +103,151 @@ const tuitionsCollection = db.collection('tuitions')
 const applicationsCollection = db.collection('applications')
 const paymentsCollection = db.collection('payments')
 
-app.get('/tuitions', async(req, res) => {
-    const result = await tuitionsCollection.find().toArray()
-    res.send(result)
+//tuitions api
+app.post('/tuitions', verifyToken, verifyTutor, async (req, res) => {
+    try {
+        const { title, subject, classLevel, mode, location, monthlyFee, daysPerWeek, bannerImage, description } = req.body
+
+        if (
+            !title?.trim() ||
+            !subject?.trim() ||
+            !classLevel?.trim() ||
+            !mode ||
+            !description?.trim()
+        ) {
+            return res.status(400).send({
+                success: false,
+                message: 'Please provide all required tuition information.'
+            })
+        }
+
+        if (!['Online', 'Offline'].includes(mode)) {
+            return res.status(400).send({
+                success: false,
+                message: 'Invalid tuition mode.'
+            })
+        }
+
+        if (mode === 'Offline' && !location?.trim()) {
+            return res.status(400).send({
+                success: false,
+                message: 'Location is required for offline tuition.'
+            })
+        }
+
+        if (
+            !Number.isFinite(monthlyFee) ||
+            monthlyFee <= 0 ||
+            !Number.isInteger(daysPerWeek) ||
+            daysPerWeek < 1 ||
+            daysPerWeek > 7
+        ) {
+            return res.status(400).send({
+                success: false,
+                message: 'Please provide a valid monthly fee and days per week.'
+            })
+        }
+
+        const tutor = req.tutor
+
+        if (tutor.plan !== 'pro') {
+            const totalTuitions = await tuitionsCollection.countDocuments({
+                tutorEmail: tutor.email
+            })
+
+            if (totalTuitions >= 2) {
+                return res.status(403).send({
+                    success: false,
+                    message: 'Free tutors can create a maximum of 2 tuition posts. Upgrade to Pro for unlimited posts.'
+                })
+            }
+        }
+
+        const tuition = {
+            title: title.trim(),
+            subject: subject.trim(),
+            classLevel: classLevel.trim(),
+            mode,
+            location: location?.trim() || '',
+            monthlyFee,
+            daysPerWeek,
+            bannerImage: bannerImage?.trim() || '',
+            description: description.trim(),
+            tutorName: tutor.name,
+            tutorEmail: tutor.email,
+            approvalStatus: 'pending',
+            isActive: true,
+            createdAt: new Date()
+        }
+
+        const result = await tuitionsCollection.insertOne(tuition)
+
+        res.status(201).send({
+            success: true,
+            message: 'Tuition created successfully. Waiting for admin approval.',
+            data: {
+                _id: result.insertedId,
+                ...tuition
+            }
+        })
+
+    } catch (error) {
+        console.error('Tuition creation failed:', error.message)
+
+        res.status(500).send({
+            success: false,
+            message: 'Internal server error.'
+        })
+    }
 })
 
+
+app.get("/tuitions", async (req, res) => {
+    try {
+        const { q, subject, classLevel, mode } = req.query;
+
+        const query = {
+            approvalStatus: "approved",
+            isActive: true,
+        };
+
+        if (subject) {
+            query.subject = subject;
+        }
+
+        if (classLevel) {
+            query.classLevel = classLevel;
+        }
+
+        if (mode) {
+            query.mode = mode;
+        }
+
+        if (q) {
+            const escapedSearch = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const searchRegex = new RegExp(escapedSearch, "i");
+
+            query.$or = [
+                { title: searchRegex },
+                { subject: searchRegex },
+                { classLevel: searchRegex },
+            ];
+        }
+
+        const result = await tuitionsCollection
+            .find(query)
+            .sort({ createdAt: -1 })
+            .toArray();
+
+        res.status(200).send(result);
+    } catch (error) {
+        console.error("Failed to fetch tuitions:", error);
+
+        res.status(500).send({
+            message: "Failed to fetch tuition listings.",
+        });
+    }
+});
 
 
 app.get('/', (req, res) => {
