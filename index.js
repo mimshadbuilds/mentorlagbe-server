@@ -448,16 +448,30 @@ app.patch("/tuitions/:id/status", verifyToken, verifyTutor, async (req, res) => 
 //admin api
 app.get("/admin/tuitions", verifyToken, verifyAdmin, async (req, res) => {
     try {
-        const result = await tuitionsCollection.find({ approvalStatus: "pending" })
-        .sort({ createdAt: -1 })
-        .toArray();
+        const { status } = req.query;
+
+        const query = {};
+
+        if (status) {
+            if (!["pending", "approved", "rejected"].includes(status)) {
+                return res.status(400).send({
+                    message: "Invalid tuition approval status."
+                });
+            }
+
+            query.approvalStatus = status;
+        }
+
+        const result = await tuitionsCollection.find(query)
+            .sort({ createdAt: -1 })
+            .toArray();
 
         res.status(200).send(result);
-    } catch(error) {
-        console.error("Failed to fetch pending tuitions:", error);
+    } catch (error) {
+        console.error("Failed to fetch admin tuitions:", error);
 
         res.status(500).send({
-        message: "Failed to fetch pending tuition listings.",
+            message: "Failed to fetch tuition listings."
         });
     }
 });
@@ -503,6 +517,40 @@ app.patch("/admin/tuitions/:id/approval", verifyToken, verifyAdmin, async (req, 
 
         res.status(500).send({
             message: "Failed to update tuition approval."
+        });
+    }
+});
+
+app.get("/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
+    try {
+        const [totalUsers, totalTutors, pendingTuitions, approvedTuitions, revenueResult] = await Promise.all([
+            usersCollection.countDocuments(),
+            usersCollection.countDocuments({ role: "tutor" }),
+            tuitionsCollection.countDocuments({ approvalStatus: "pending" }),
+            tuitionsCollection.countDocuments({ approvalStatus: "approved" }),
+            paymentsCollection.aggregate([
+                { $match: { paymentStatus: "paid" } },
+                {
+                    $group: {
+                        _id: null,
+                        totalRevenue: { $sum: "$amount" }
+                    }
+                }
+            ]).toArray()
+        ]);
+
+        res.status(200).send({
+            totalUsers,
+            totalTutors,
+            pendingTuitions,
+            approvedTuitions,
+            totalRevenue: revenueResult[0]?.totalRevenue || 0
+        });
+    } catch (error) {
+        console.error("Failed to fetch admin stats:", error);
+
+        res.status(500).send({
+            message: "Failed to fetch admin statistics."
         });
     }
 });
