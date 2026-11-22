@@ -128,6 +128,7 @@ const verifyAdmin = async (req, res, next) => {
         });
     }
 };
+
 const verifyStudent = async (req, res, next) =>    {
     const user = await usersCollection.findOne({
         email: req.user.email
@@ -408,24 +409,33 @@ app.post("/payments/webhook", async (req, res) => {
                 ? existingPayment?.paidAt || now
                 : null,
         };
-        const updateFilter = paymentStatus === "paid"
-            ? { stripeSessionId: session.id }
-            : { stripeSessionId: session.id, paymentStatus: { $ne: "paid" } };
 
-        try {
+        if(paymentStatus === "paid") { 
             await paymentsCollection.updateOne(
-                updateFilter,
-                {
-                    $set: payment,
-                    $setOnInsert: { createdAt: now },
+            { stripeSessionId: session.id },
+            {
+                $set: payment,
+                $setOnInsert: {
+                    createdAt: now,
                 },
-                { upsert: true }
-            );
-        } catch (error) {
-            if (error.code !== 11000) {
-                throw error;
-            }
-        }
+            },
+            { upsert: true }
+        );
+    } else {
+        await paymentsCollection.updateOne(
+            {
+                stripeSessionId: session.id,
+                paymentStatus: { $ne: "paid" },
+            },
+            {
+                $set: payment,
+                $setOnInsert: {
+                    createdAt: now,
+                },
+            },
+            { upsert: true }
+        );
+    }
 
         const savedPayment = await paymentsCollection.findOne({
             stripeSessionId: session.id,
@@ -542,6 +552,7 @@ const getPaymentStatus = async (req, res) => {
 };
 
 app.get("/payments/status/:sessionId", verifyToken, getPaymentStatus);
+
 app.get("/payments/status", verifyToken, getPaymentStatus);
 
 app.post("/upload/image", verifyToken, handleImageUpload, async (req, res) => {
@@ -1231,39 +1242,82 @@ app.patch("/admin/tuitions/:id/approval", verifyToken, verifyAdmin, async (req, 
     try {
         if (!ObjectId.isValid(id)) {
             return res.status(400).send({
+                success: false,
                 message: "Invalid tuition ID."
             });
         }
 
         if (!["approved", "rejected"].includes(approvalStatus)) {
             return res.status(400).send({
+                success: false,
                 message: "approvalStatus must be approved or rejected."
+            });
+        }
+
+        const tuition = await tuitionsCollection.findOne({
+            _id: new ObjectId(id)
+        });
+
+        if (!tuition) {
+            return res.status(404).send({
+                success: false,
+                message: "Tuition not found."
+            });
+        }
+
+        const currentStatus = tuition.approvalStatus;
+
+        const isValidTransition =
+            currentStatus === "pending" ||
+            (currentStatus === "approved" && approvalStatus === "rejected") ||
+            (currentStatus === "rejected" && approvalStatus === "approved");
+
+        if (!isValidTransition) {
+            return res.status(409).send({
+                success: false,
+                message: `Tuition is already ${currentStatus}.`
             });
         }
 
         const result = await tuitionsCollection.updateOne(
             {
                 _id: new ObjectId(id),
-                approvalStatus: "pending"
+                approvalStatus: currentStatus
             },
             {
-                $set: { approvalStatus }
+                $set: {
+                    approvalStatus,
+                    approvalUpdatedAt: new Date(),
+                    approvalUpdatedBy: req.admin.email
+                }
             }
         );
 
         if (result.matchedCount === 0) {
-            return res.status(404).send({
-                message: "Pending tuition not found."
+            return res.status(409).send({
+                success: false,
+                message: "Tuition status has changed. Please refresh and try again."
             });
         }
 
+        const action =
+            currentStatus === "approved" && approvalStatus === "rejected"
+                ? "revoked"
+                : currentStatus === "rejected" && approvalStatus === "approved"
+                    ? "reinstated"
+                    : approvalStatus;
+
         res.status(200).send({
-            message: `Tuition ${approvalStatus} successfully.`
+            success: true,
+            message: `Tuition ${action} successfully.`,
+            approvalStatus
         });
+
     } catch (error) {
         console.error("Failed to update tuition approval:", error);
 
         res.status(500).send({
+            success: false,
             message: "Failed to update tuition approval."
         });
     }
