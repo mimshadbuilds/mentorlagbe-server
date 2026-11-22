@@ -535,6 +535,39 @@ app.post("/applications", verifyToken, verifyStudent, async (req, res) => {
     }
 });
 
+app.get("/applications/tutor", verifyToken, verifyTutor, async (req, res) => {
+    try {
+        const result = await applicationsCollection.find({ 
+            tutorEmail: req.tutor.email })
+            .sort({ appliedAt: -1 })
+            .toArray();
+
+        res.status(200).send(result);
+    } catch (error) {
+        console.error("Failed to fetch tutor applications:", error);
+
+        res.status(500).send({
+            message: "Failed to fetch applications."
+        });
+    }
+});
+
+app.get("/applications/student", verifyToken, verifyStudent, async (req, res) => {
+    try {
+        const result = await applicationsCollection.find({ studentEmail: req.student.email })
+            .sort({ appliedAt: -1 })
+            .toArray();
+
+        res.status(200).send(result);
+    } catch (error) {
+        console.error("Failed to fetch student applications:", error);
+
+        res.status(500).send({
+            message: "Failed to fetch applications."
+        });
+    }
+});
+
 //admin api
 app.get("/admin/tuitions", verifyToken, verifyAdmin, async (req, res) => {
     try {
