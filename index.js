@@ -4,13 +4,19 @@ import cors from 'cors'
 import { MongoClient, ObjectId } from 'mongodb'
 import { jwtVerify, createRemoteJWKSet } from 'jose'
 import { handleImageUpload } from './middlewares/upload.js'
+import stripe from "./config/stripe.js";
 
 
 const app = express()
 const port = process.env.PORT || 5000
 
-app.use(express.json())
-app.use(cors())
+app.use(cors());
+
+app.use("/payments/webhook",
+    express.raw({ type: "application/json" })
+);
+
+app.use(express.json());
 
 const betterAuthUrl = process.env.CLIENT_URL
 
@@ -156,6 +162,115 @@ const tuitionsCollection = db.collection('tuitions')
 const applicationsCollection = db.collection('applications')
 const paymentsCollection = db.collection('payments')
 
+app.post("/payments/checkout", verifyToken, async (req, res) => {
+    try {
+        const { plan } = req.body;
+
+        const plans = {
+            student_pro: {
+                role: "student",
+                name: "Student Pro",
+                amount: 1000,
+            },
+            tutor_pro: {
+                role: "tutor",
+                name: "Tutor Pro",
+                amount: 1500,
+            },
+        };
+
+        if (!plan || !plans[plan]) {
+            return res.status(400).send({
+                success: false,
+                message: "Please select a valid Pro plan.",
+            });
+        }
+
+        const selectedPlan = plans[plan];
+
+        const user = await usersCollection.findOne({
+            email: req.user.email,
+        });
+
+        if (!user) {
+            return res.status(404).send({
+                success: false,
+                message: "User not found.",
+            });
+        }
+
+        if (user.role !== selectedPlan.role) {
+            return res.status(403).send({
+                success: false,
+                message: "You are not authorized to purchase this plan.",
+            });
+        }
+
+        if (user.plan === "pro") {
+            return res.status(409).send({
+                success: false,
+                message: "You already have an active Pro plan.",
+            });
+        }
+
+        const session = await stripe.checkout.sessions.create({
+            mode: "payment",
+
+            customer_email: user.email,
+
+            client_reference_id: user.email,
+
+            line_items: [
+                {
+                    price_data: {
+                        currency: "usd",
+                        product_data: {
+                            name: selectedPlan.name,
+                            description: "One-time payment for permanent Pro access.",
+                        },
+                        unit_amount: selectedPlan.amount,
+                    },
+                    quantity: 1,
+                },
+            ],
+
+            metadata: {
+                userEmail: user.email,
+                userName: user.name || "",
+                userRole: user.role,
+                planName: selectedPlan.name,
+                plan: plan,
+            },
+
+            payment_intent_data: {
+                metadata: {
+                    userEmail: user.email,
+                    userRole: user.role,
+                    plan: plan,
+                },
+            },
+
+            success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+
+            cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
+        });
+
+        res.status(200).send({
+            success: true,
+            message: "Checkout session created successfully.",
+            sessionId: session.id,
+            url: session.url,
+        });
+
+    } catch (error) {
+        console.error("Stripe checkout creation failed:", error);
+
+        res.status(500).send({
+            success: false,
+            message: "Failed to create Stripe checkout session.",
+        });
+    }
+});
 
 app.post("/upload/image", verifyToken, handleImageUpload, async (req, res) => {
     try {
