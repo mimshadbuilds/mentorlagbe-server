@@ -3,13 +3,14 @@ import express from 'express'
 import cors from 'cors'
 import { MongoClient, ObjectId } from 'mongodb'
 import { jwtVerify, createRemoteJWKSet } from 'jose'
+import { handleImageUpload } from './middlewares/upload'
+
 
 const app = express()
 const port = process.env.PORT || 5000
 
 app.use(express.json())
 app.use(cors())
-
 
 const betterAuthUrl = process.env.CLIENT_URL
 
@@ -86,7 +87,6 @@ const verifyTutor = async (req, res, next) => {
         })
     }
 }
-
 const verifyAdmin = async (req, res, next) => {
     try {
         const user = await usersCollection.findOne({
@@ -119,7 +119,6 @@ const verifyAdmin = async (req, res, next) => {
         });
     }
 };
-
 const verifyStudent = async (req, res, next) =>    {
     const user = await usersCollection.findOne({
         email: req.user.email
@@ -156,6 +155,165 @@ const usersCollection = db.collection('user')
 const tuitionsCollection = db.collection('tuitions')
 const applicationsCollection = db.collection('applications')
 const paymentsCollection = db.collection('payments')
+
+
+app.post("/upload/image", verifyToken, handleImageUpload, async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).send({
+            message: "Please select an image to upload.",
+            });
+        }
+
+        const apiKey = process.env.IMGBB_API_KEY;
+
+        if (!apiKey) {
+            return res.status(500).send({
+            message: "Image upload service is not configured.",
+            });
+        }
+
+        const imageBase64 = req.file.buffer.toString("base64");
+
+        const formData = new URLSearchParams();
+        formData.append("image", imageBase64);
+
+        const response = await fetch(
+            `https://api.imgbb.com/1/upload?key=${apiKey}`,
+            {
+            method: "POST",
+            body: formData,
+            }
+        );
+
+        const result = await response.json();
+
+        if (!response.ok || !result.success) {
+            return res.status(502).send({
+            message: "Image hosting service failed to upload the image.",
+            });
+        }
+
+        res.status(201).send({
+            message: "Image uploaded successfully.",
+            imageUrl: result.data.url,
+        });
+        } catch (error) {
+        res.status(500).send({
+            message: "Failed to upload image.",
+            error: error.message,
+        });
+        }
+    }
+);
+
+
+//users api
+app.get("/users/me", verifyToken, async (req, res) => {
+    try {
+        const user = await usersCollection.findOne(
+        { email: req.user.email },
+        {
+            projection: {
+            name: 1,
+            email: 1,
+            image: 1,
+            role: 1,
+            phone: 1,
+            bio: 1,
+            plan: 1,
+            createdAt: 1,
+            },
+        });
+
+        if(!user) {
+        return res.status(404).send({
+            message: "User not found.",
+        });
+        }
+
+        res.send({
+        message: "Profile retrieved successfully.",
+        user,
+        });
+    } catch (error) {
+        res.status(500).send({
+        message: "Failed to retrieve profile.",
+        error: error.message,
+        });
+    }
+});
+
+app.patch("/users/me", verifyToken, async (req, res) => {
+    try {
+        const { phone, bio } = req.body;
+
+        if (phone === undefined && bio === undefined) {
+        return res.status(400).send({
+            message: "At least one profile field is required.",
+        });
+        }
+
+        if (
+        (phone !== undefined && typeof phone !== "string") ||
+        (bio !== undefined && typeof bio !== "string")
+        ) {
+        return res.status(400).send({
+            message: "Phone and bio must be strings.",
+        });
+        }
+
+        const updatedFields = {};
+
+        if (phone !== undefined) {
+        updatedFields.phone = phone.trim();
+        }
+
+        if (bio !== undefined) {
+        updatedFields.bio = bio.trim();
+        }
+
+        const result = await usersCollection.updateOne(
+        { email: req.user.email },
+        {
+            $set: updatedFields,
+        }
+        );
+
+        if (result.matchedCount === 0) {
+        return res.status(404).send({
+            message: "User not found.",
+        });
+        }
+
+        const updatedUser = await usersCollection.findOne(
+        { email: req.user.email },
+        {
+            projection: {
+            name: 1,
+            email: 1,
+            image: 1,
+            role: 1,
+            phone: 1,
+            bio: 1,
+            plan: 1,
+            createdAt: 1,
+            },
+        }
+        );
+
+        res.send({
+        message: "Profile updated successfully.",
+        user: updatedUser,
+        });
+    } catch (error) {
+        res.status(500).send({
+        message: "Failed to update profile.",
+        error: error.message,
+        });
+    }
+});
+
 
 //tuitions api
 app.post('/tuitions', verifyToken, verifyTutor, async (req, res) => {
@@ -647,7 +805,6 @@ app.delete("/applications/:id", verifyToken, verifyStudent, async (req, res) => 
         });
     }
 });
-
 
 
 //admin api
