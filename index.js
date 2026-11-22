@@ -624,7 +624,38 @@ app.patch("/admin/users/:id/role", verifyToken, verifyAdmin, async (req, res) =>
             message: "Failed to update user role."
         });
     }
-}); 
+});
+
+app.get("/admin/transactions", verifyToken, verifyAdmin, async (req, res) => {
+    try {
+        const result = await paymentsCollection
+            .find({},
+                {
+                    projection: {
+                        userName: 1,
+                        userEmail: 1,
+                        userRole: 1,
+                        planName: 1,
+                        amount: 1,
+                        currency: 1,
+                        transactionId: 1,
+                        paidAt: 1,
+                        paymentStatus: 1
+                    }
+                }
+            )
+            .sort({ paidAt: -1 })
+            .toArray();
+
+        res.status(200).send(result);
+    } catch (error) {
+        console.error("Failed to fetch admin transactions:", error);
+
+        res.status(500).send({
+            message: "Failed to fetch transactions."
+        });
+    }
+});
 
 app.get('/', (req, res) => {
     res.send('Welcome to mentorlagbe backend server');
