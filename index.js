@@ -3,14 +3,17 @@ import express from 'express'
 import cors from 'cors'
 import { MongoClient, ObjectId } from 'mongodb'
 import { jwtVerify, createRemoteJWKSet } from 'jose'
+import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { handleImageUpload } from './middlewares/upload.js'
 import stripe from "./config/stripe.js";
-
 
 const app = express()
 const port = process.env.PORT || 5000
 
-app.use(cors());
+app.use(cors({
+    origin: process.env.CLIENT_URL,
+}));
 
 app.use("/payments/webhook",
     express.raw({ type: "application/json" })
@@ -162,32 +165,32 @@ const tuitionsCollection = db.collection('tuitions')
 const applicationsCollection = db.collection('applications')
 const paymentsCollection = db.collection('payments')
 
+const proPlans = {
+    student_pro: {
+        role: "student",
+        name: "Student Pro",
+        amount: 1000,
+    },
+    tutor_pro: {
+        role: "tutor",
+        name: "Tutor Pro",
+        amount: 1500,
+    },
+};
+
+await Promise.all([
+    paymentsCollection.createIndex(
+        { stripeSessionId: 1 },
+        {
+            unique: true,
+            partialFilterExpression: { stripeSessionId: { $type: "string" } },
+        }
+    ),
+    paymentsCollection.createIndex({ userEmail: 1, paidAt: -1 }),
+]);
+
 app.post("/payments/checkout", verifyToken, async (req, res) => {
     try {
-        const { plan } = req.body;
-
-        const plans = {
-            student_pro: {
-                role: "student",
-                name: "Student Pro",
-                amount: 1000,
-            },
-            tutor_pro: {
-                role: "tutor",
-                name: "Tutor Pro",
-                amount: 1500,
-            },
-        };
-
-        if (!plan || !plans[plan]) {
-            return res.status(400).send({
-                success: false,
-                message: "Please select a valid Pro plan.",
-            });
-        }
-
-        const selectedPlan = plans[plan];
-
         const user = await usersCollection.findOne({
             email: req.user.email,
         });
@@ -196,6 +199,35 @@ app.post("/payments/checkout", verifyToken, async (req, res) => {
             return res.status(404).send({
                 success: false,
                 message: "User not found.",
+            });
+        }
+
+        if (!["student", "tutor"].includes(user.role)) {
+            return res.status(403).send({
+                success: false,
+                message: "Only students and tutors can purchase Pro.",
+            });
+        }
+
+        const { planId, plan, role } = req.body || {};
+        const requestedPlanId = planId || (
+            plan === "pro" ? `${user.role}_pro` : plan
+        );
+        const selectedPlan = Object.hasOwn(proPlans, requestedPlanId)
+            ? proPlans[requestedPlanId]
+            : null;
+
+        if (!selectedPlan) {
+            return res.status(400).send({
+                success: false,
+                message: "Please select a valid Pro plan.",
+            });
+        }
+
+        if (role && role !== user.role) {
+            return res.status(403).send({
+                success: false,
+                message: "You are not authorized to purchase this plan.",
             });
         }
 
@@ -215,18 +247,15 @@ app.post("/payments/checkout", verifyToken, async (req, res) => {
 
         const session = await stripe.checkout.sessions.create({
             mode: "payment",
-
             customer_email: user.email,
-
-            client_reference_id: user.email,
-
+            client_reference_id: String(user.id || user._id),
             line_items: [
                 {
                     price_data: {
                         currency: "usd",
                         product_data: {
                             name: selectedPlan.name,
-                            description: "One-time payment for permanent Pro access.",
+                            description: "One-time payment for lifetime Pro access.",
                         },
                         unit_amount: selectedPlan.amount,
                     },
@@ -235,29 +264,31 @@ app.post("/payments/checkout", verifyToken, async (req, res) => {
             ],
 
             metadata: {
+                userId: String(user.id || user._id),
                 userEmail: user.email,
-                userName: user.name || "",
                 userRole: user.role,
                 planName: selectedPlan.name,
-                plan: plan,
+                planId: requestedPlanId,
             },
-
             payment_intent_data: {
                 metadata: {
+                    userId: String(user.id || user._id),
                     userEmail: user.email,
                     userRole: user.role,
-                    plan: plan,
+                    planId: requestedPlanId,
                 },
             },
-
             success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
-
             cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
         });
 
         res.status(200).send({
             success: true,
-            message: "Checkout session created successfully.",
+            message: "Checkout session created.",
+            data: {
+                checkoutUrl: session.url,
+                sessionId: session.id,
+            },
             sessionId: session.id,
             url: session.url,
         });
@@ -271,6 +302,247 @@ app.post("/payments/checkout", verifyToken, async (req, res) => {
         });
     }
 });
+
+app.post("/payments/webhook", async (req, res) => {
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    const signature = req.headers["stripe-signature"];
+
+    if (!webhookSecret) {
+        console.error("Stripe webhook rejected: STRIPE_WEBHOOK_SECRET is not configured.");
+        return res.status(500).send({ success: false, message: "Webhook is not configured." });
+    }
+
+    if (!signature || typeof signature !== "string") {
+        return res.status(400).send({ success: false, message: "Missing Stripe signature." });
+    }
+
+    let event;
+    try {
+        event = stripe.webhooks.constructEvent(req.body, signature, webhookSecret);
+    } catch (error) {
+        console.error("Stripe webhook signature verification failed:", error.message);
+        return res.status(400).send({ success: false, message: "Invalid Stripe signature." });
+    }
+
+    const eventStatuses = {
+        "checkout.session.completed": "completed",
+        "checkout.session.async_payment_succeeded": "paid",
+        "checkout.session.async_payment_failed": "failed",
+        "checkout.session.expired": "expired",
+    };
+    const eventStatus = eventStatuses[event.type];
+
+    if (!eventStatus) {
+        return res.status(200).send({ received: true });
+    }
+
+    try {
+        const session = event.data.object;
+        const metadata = session.metadata || {};
+        const selectedPlan = proPlans[metadata.planId];
+
+        if (
+            session.mode !== "payment" ||
+            !selectedPlan ||
+            metadata.planName !== selectedPlan.name ||
+            metadata.userEmail !== session.customer_email ||
+            metadata.userRole !== selectedPlan.role ||
+            metadata.userId !== session.client_reference_id ||
+            session.currency !== "usd" ||
+            session.amount_total !== selectedPlan.amount
+        ) {
+            console.error("Stripe webhook session validation failed:", session.id);
+            return res.status(400).send({ success: false, message: "Invalid checkout session." });
+        }
+
+        const user = await usersCollection.findOne({ email: metadata.userEmail });
+        if (
+            !user ||
+            String(user.id || user._id) !== metadata.userId ||
+            user.role !== selectedPlan.role
+        ) {
+            console.error("Stripe webhook user validation failed:", session.id);
+            return res.status(400).send({ success: false, message: "Checkout user validation failed." });
+        }
+
+        const existingPayment = await paymentsCollection.findOne({
+            stripeSessionId: session.id,
+        });
+        if (
+            existingPayment &&
+            (existingPayment.userEmail !== user.email ||
+                existingPayment.planId !== metadata.planId)
+        ) {
+            console.error("Stripe webhook payment ownership conflict:", session.id);
+            return res.status(400).send({ success: false, message: "Checkout payment conflict." });
+        }
+
+        const paymentStatus = eventStatus === "paid" ||
+            (eventStatus === "completed" && session.payment_status === "paid")
+            ? "paid"
+            : eventStatus === "failed" || eventStatus === "expired"
+                ? eventStatus
+                : "pending";
+        if (paymentStatus === "paid" && session.payment_status !== "paid") {
+            return res.status(400).send({ success: false, message: "Checkout payment is not paid." });
+        }
+        const paymentIntentId = typeof session.payment_intent === "string"
+            ? session.payment_intent
+            : session.payment_intent?.id || null;
+        const now = new Date();
+        const payment = {
+            userEmail: user.email,
+            userName: user.name || "",
+            userRole: user.role,
+            planId: metadata.planId,
+            planName: selectedPlan.name,
+            amount: session.amount_total / 100,
+            currency: session.currency,
+            transactionId: paymentIntentId,
+            stripeSessionId: session.id,
+            stripeCustomerId: typeof session.customer === "string"
+                ? session.customer
+                : session.customer?.id || null,
+            paymentStatus,
+            paidAt: paymentStatus === "paid"
+                ? existingPayment?.paidAt || now
+                : null,
+        };
+        const updateFilter = paymentStatus === "paid"
+            ? { stripeSessionId: session.id }
+            : { stripeSessionId: session.id, paymentStatus: { $ne: "paid" } };
+
+        try {
+            await paymentsCollection.updateOne(
+                updateFilter,
+                {
+                    $set: payment,
+                    $setOnInsert: { createdAt: now },
+                },
+                { upsert: true }
+            );
+        } catch (error) {
+            if (error.code !== 11000) {
+                throw error;
+            }
+        }
+
+        const savedPayment = await paymentsCollection.findOne({
+            stripeSessionId: session.id,
+        });
+        if (
+            !savedPayment ||
+            savedPayment.userEmail !== user.email ||
+            savedPayment.planId !== metadata.planId
+        ) {
+            console.error("Stripe webhook payment persistence conflict:", session.id);
+            return res.status(409).send({ success: false, message: "Payment persistence conflict." });
+        }
+
+        if (paymentStatus === "paid") {
+            const result = await usersCollection.updateOne(
+                { _id: user._id, email: user.email, role: selectedPlan.role },
+                { $set: { plan: "pro", planUpdatedAt: savedPayment.paidAt } }
+            );
+            if (result.matchedCount === 0) {
+                throw new Error(`Could not activate Pro for verified payment ${session.id}.`);
+            }
+        }
+
+        return res.status(200).send({ received: true });
+    } catch (error) {
+        console.error("Stripe webhook processing failed:", error);
+        return res.status(500).send({ success: false, message: "Webhook processing failed." });
+    }
+});
+
+const getPaymentStatus = async (req, res) => {
+    try {
+        const sessionId = req.params.sessionId || req.query.session_id;
+        if (typeof sessionId !== "string" || !sessionId.startsWith("cs_")) {
+            return res.status(400).send({ success: false, message: "Invalid checkout session ID." });
+        }
+
+        const user = await usersCollection.findOne({ email: req.user.email });
+        if (!user) {
+            return res.status(404).send({ success: false, message: "User not found." });
+        }
+
+        const payment = await paymentsCollection.findOne({
+            stripeSessionId: sessionId,
+        });
+        if (payment) {
+            if (payment.userEmail !== user.email) {
+                return res.status(404).send({ success: false, message: "Payment not found." });
+            }
+
+            const data = {
+                paymentStatus: payment.paymentStatus,
+                ...(payment.paymentStatus === "paid" ? {
+                    planName: payment.planName,
+                    amount: payment.amount,
+                    currency: payment.currency,
+                    transactionId: payment.transactionId,
+                    paidAt: payment.paidAt,
+                } : {}),
+            };
+            return res.status(200).send({
+                success: true,
+                ...data,
+                data,
+            });
+        }
+
+        let session;
+        try {
+            session = await stripe.checkout.sessions.retrieve(sessionId);
+        } catch (error) {
+            if (error.code === "resource_missing") {
+                return res.status(404).send({ success: false, message: "Payment not found." });
+            }
+            throw error;
+        }
+
+        const metadata = session.metadata || {};
+        if (
+            metadata.userEmail !== user.email ||
+            metadata.userId !== String(user.id || user._id) ||
+            metadata.userRole !== user.role ||
+            metadata.planName !== proPlans[metadata.planId]?.name ||
+            metadata.userId !== session.client_reference_id ||
+            !Object.hasOwn(proPlans, metadata.planId)
+        ) {
+            return res.status(404).send({ success: false, message: "Payment not found." });
+        }
+
+        const selectedPlan = proPlans[metadata.planId];
+        if (
+            session.mode !== "payment" ||
+            session.amount_total !== selectedPlan.amount ||
+            session.currency !== "usd"
+        ) {
+            return res.status(404).send({ success: false, message: "Payment not found." });
+        }
+
+        const data = {
+            paymentStatus: session.status === "expired" ? "expired" : "pending",
+        };
+        return res.status(200).send({
+            success: true,
+            ...data,
+            data,
+        });
+    } catch (error) {
+        console.error("Failed to fetch payment status:", error);
+        return res.status(500).send({
+            success: false,
+            message: "Failed to fetch payment status.",
+        });
+    }
+};
+
+app.get("/payments/status/:sessionId", verifyToken, getPaymentStatus);
+app.get("/payments/status", verifyToken, getPaymentStatus);
 
 app.post("/upload/image", verifyToken, handleImageUpload, async (req, res) => {
     try {
@@ -1005,7 +1277,7 @@ app.get("/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
             tuitionsCollection.countDocuments({ approvalStatus: "pending" }),
             tuitionsCollection.countDocuments({ approvalStatus: "approved" }),
             paymentsCollection.aggregate([
-                { $match: { paymentStatus: "paid" } },
+                { $match: { paymentStatus: "paid", currency: "usd" } },
                 {
                     $group: {
                         _id: null,
@@ -1020,7 +1292,8 @@ app.get("/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
             totalTutors,
             pendingTuitions,
             approvedTuitions,
-            totalRevenue: revenueResult[0]?.totalRevenue || 0
+            totalRevenue: revenueResult[0]?.totalRevenue || 0,
+            totalRevenueCurrency: "usd"
         });
     } catch (error) {
         console.error("Failed to fetch admin stats:", error);
@@ -1115,8 +1388,10 @@ app.get("/admin/transactions", verifyToken, verifyAdmin, async (req, res) => {
                         amount: 1,
                         currency: 1,
                         transactionId: 1,
+                        stripeSessionId: 1,
                         paidAt: 1,
-                        paymentStatus: 1
+                        paymentStatus: 1,
+                        createdAt: 1
                     }
                 }
             )
@@ -1137,6 +1412,13 @@ app.get('/', (req, res) => {
     res.send('Welcome to mentorlagbe backend server');
 })
 
-app.listen(port, () => {
-    console.log(`Mentorlagbe server listenting on port ${port}`) 
-})
+if (
+    process.argv[1]
+    && import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+) {
+    app.listen(port, () => {
+        console.log(`Mentorlagbe server listenting on port ${port}`)
+    })
+}
+
+export default app
