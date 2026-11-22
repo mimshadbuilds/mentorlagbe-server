@@ -568,6 +568,88 @@ app.get("/applications/student", verifyToken, verifyStudent, async (req, res) =>
     }
 });
 
+app.patch("/applications/:id/status", verifyToken, verifyTutor, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body;
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).send({
+                message: "Invalid application ID."
+            });
+        }
+
+        if (!["accepted", "rejected"].includes(status)) {
+            return res.status(400).send({
+                message: "Status must be accepted or rejected."
+            });
+        }
+
+        const result = await applicationsCollection.updateOne(
+            {
+                _id: new ObjectId(id),
+                tutorEmail: req.tutor.email,
+                status: "pending"
+            },
+            {
+                $set: { status }
+            }
+        );
+
+        if (result.matchedCount === 0) {
+            return res.status(404).send({
+                message: "Pending application not found or you are not authorized to update it."
+            });
+        }
+
+        res.status(200).send({
+            message: `Application ${status} successfully.`
+        });
+    } catch (error) {
+        console.error("Failed to update application status:", error);
+
+        res.status(500).send({
+            message: "Failed to update application status."
+        });
+    }
+});
+
+app.delete("/applications/:id", verifyToken, verifyStudent, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).send({
+                message: "Invalid application ID."
+            });
+        }
+
+        const result = await applicationsCollection.deleteOne({
+            _id: new ObjectId(id),
+            studentEmail: req.student.email,
+            status: "pending"
+        });
+
+        if (result.deletedCount === 0) {
+            return res.status(404).send({
+                message: "Pending application not found or you are not authorized to cancel it."
+            });
+        }
+
+        res.status(200).send({
+            message: "Application cancelled successfully."
+        });
+    } catch (error) {
+        console.error("Failed to cancel application:", error);
+
+        res.status(500).send({
+            message: "Failed to cancel application."
+        });
+    }
+});
+
+
+
 //admin api
 app.get("/admin/tuitions", verifyToken, verifyAdmin, async (req, res) => {
     try {
