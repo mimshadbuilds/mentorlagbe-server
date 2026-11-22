@@ -120,6 +120,26 @@ const verifyAdmin = async (req, res, next) => {
     }
 };
 
+const verifyStudent = async (req, res, next) =>    {
+    const user = await usersCollection.findOne({
+        email: req.user.email
+    });
+
+    if (!user) {
+        return res.status(404).send({
+            message: "User not found."
+        });
+    }
+
+    if (user.role !== "student") {
+        return res.status(403).send({
+            message: "Only students can perform this action."
+        });
+    }
+
+    req.student = user;
+    next();
+};
 
 const client = new MongoClient(process.env.MONGODB_URI)
 
@@ -441,6 +461,76 @@ app.patch("/tuitions/:id/status", verifyToken, verifyTutor, async (req, res) => 
 
     res.status(500).send({
         message: "Failed to update tuition status.",
+        });
+    }
+});
+
+//applications api
+app.post("/applications", verifyToken, verifyStudent, async (req, res) => {
+    try {
+        const { tuitionId, preferredSchedule, studentNote } = req.body;
+
+        if(!tuitionId || !ObjectId.isValid(tuitionId)) {
+            return res.status(400).send({
+                message: "Valid tuition ID is required."
+            });
+        }
+
+        if(!preferredSchedule?.trim()) {
+            return res.status(400).send({
+                message: "Preferred schedule is required."
+            });
+        }
+
+        const tuition = await tuitionsCollection.findOne({
+            _id: new ObjectId(tuitionId),
+            approvalStatus: "approved",
+            isActive: true
+            });
+
+        if(!tuition) {
+            return res.status(404).send({
+                message: "Tuition listing not found or unavailable."
+            });
+        }
+
+        const existingApplication = await applicationsCollection.findOne({
+            tuitionId: tuition._id.toString(),
+            studentEmail: req.student.email
+        });
+
+        if(existingApplication) {
+            return res.status(409).send({
+                message: "You have already applied for this tuition."
+            });
+        }
+
+        const application = {
+            tuitionId: tuition._id.toString(),
+            tuitionTitle: tuition.title,
+            subject: tuition.subject,
+            monthlyFee: tuition.monthlyFee,
+            tutorEmail: tuition.tutorEmail,
+            studentName: req.student.name,
+            studentEmail: req.student.email,
+            studentPhone: req.student.phone || "",
+            preferredSchedule: preferredSchedule.trim(),
+            studentNote: studentNote?.trim() || "",
+            status: "pending",
+            appliedAt: new Date()
+        };
+
+        const result = await applicationsCollection.insertOne(application);
+
+        res.status(201).send({
+            message: "Application submitted successfully.",
+            insertedId: result.insertedId
+        });
+    } catch (error) {
+        console.error("Failed to submit application:", error);
+
+        res.status(500).send({
+            message: "Failed to submit application."
         });
     }
 });
