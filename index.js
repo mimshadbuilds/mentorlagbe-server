@@ -3,7 +3,7 @@ import express from 'express'
 import cors from 'cors'
 import { MongoClient, ObjectId } from 'mongodb'
 import { jwtVerify, createRemoteJWKSet } from 'jose'
-import { handleImageUpload } from './middlewares/upload'
+import { handleImageUpload } from './middlewares/upload.js'
 
 
 const app = express()
@@ -206,7 +206,6 @@ app.post("/upload/image", verifyToken, handleImageUpload, async (req, res) => {
         }
     }
 );
-
 
 //users api
 app.get("/users/me", verifyToken, async (req, res) => {
